@@ -29,6 +29,7 @@
 #include "block_cipher_internal.h"
 #endif
 
+#include <stdbool.h>
 #include <string.h>
 
 #if defined(MBEDTLS_AESNI_C)
@@ -181,8 +182,13 @@ int mbedtls_gcm_setkey(mbedtls_gcm_context *ctx,
 #else
     const mbedtls_cipher_info_t *cipher_info;
 
+#if defined(MBEDTLS_CIPHER_MODE_CTR)
+    cipher_info = mbedtls_cipher_info_from_values(cipher, keybits,
+                                                  MBEDTLS_MODE_CTR);
+#else
     cipher_info = mbedtls_cipher_info_from_values(cipher, keybits,
                                                   MBEDTLS_MODE_ECB);
+#endif
     if (cipher_info == NULL) {
         return MBEDTLS_ERR_GCM_BAD_INPUT;
     }
@@ -435,6 +441,16 @@ int mbedtls_gcm_starts(mbedtls_gcm_context *ctx,
 
 #if defined(MBEDTLS_BLOCK_CIPHER_C)
     ret = mbedtls_block_cipher_encrypt(&ctx->block_cipher_ctx, ctx->y, ctx->base_ectr);
+#elif defined(MBEDTLS_CIPHER_MODE_CTR)
+    unsigned char zero_block[16] = {0};
+    ret = mbedtls_cipher_set_iv(&ctx->cipher_ctx, ctx->y, 16);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = mbedtls_cipher_update(&ctx->cipher_ctx, zero_block, sizeof(zero_block), ctx->base_ectr, &olen);
+    if (ret != 0) {
+        return ret;
+    }
 #else
     ret = mbedtls_cipher_update(&ctx->cipher_ctx, ctx->y, 16, ctx->base_ectr, &olen);
 #endif
@@ -443,6 +459,39 @@ int mbedtls_gcm_starts(mbedtls_gcm_context *ctx,
     }
 
     return 0;
+}
+
+static void update_ghash(mbedtls_gcm_context *ctx,
+                         const unsigned char *data,
+                         size_t length,
+                         bool is_ad)
+{
+    size_t pos = 0;
+    size_t offset = is_ad ? ctx->add_len % 16 : ctx->len % 16;
+    if (offset > 0) {
+        size_t to_add = 16 - offset;
+        if (to_add > length) {
+            to_add = length;
+        }
+        mbedtls_xor(ctx->buf + offset, ctx->buf + offset, data, to_add);
+        if (offset + to_add == 16) {
+            gcm_mult(ctx, ctx->buf, ctx->buf);
+        }
+        pos += to_add;
+    }
+
+    while (length - pos >= 16) {
+        mbedtls_xor(ctx->buf, ctx->buf, &data[pos], 16);
+        gcm_mult(ctx, ctx->buf, ctx->buf);
+        pos += 16;
+    }
+    mbedtls_xor(ctx->buf, ctx->buf, &data[pos], length - pos);
+
+    if (is_ad) {
+        ctx->add_len += length;
+    } else {
+        ctx->len += length;
+    }
 }
 
 /**
@@ -465,10 +514,6 @@ int mbedtls_gcm_starts(mbedtls_gcm_context *ctx,
 int mbedtls_gcm_update_ad(mbedtls_gcm_context *ctx,
                           const unsigned char *add, size_t add_len)
 {
-    const unsigned char *p;
-    size_t use_len, offset;
-    uint64_t new_add_len;
-
     /* AD is limited to 2^64 bits, ie 2^61 bytes
      * Also check for possible overflow */
 #if SIZE_MAX > 0xFFFFFFFFFFFFFFFFULL
@@ -476,49 +521,17 @@ int mbedtls_gcm_update_ad(mbedtls_gcm_context *ctx,
         return MBEDTLS_ERR_GCM_BAD_INPUT;
     }
 #endif
-    new_add_len = ctx->add_len + (uint64_t) add_len;
+    uint64_t new_add_len = ctx->add_len + (uint64_t) add_len;
     if (new_add_len < ctx->add_len || new_add_len >> 61 != 0) {
         return MBEDTLS_ERR_GCM_BAD_INPUT;
     }
 
-    offset = ctx->add_len % 16;
-    p = add;
-
-    if (offset != 0) {
-        use_len = 16 - offset;
-        if (use_len > add_len) {
-            use_len = add_len;
-        }
-
-        mbedtls_xor(ctx->buf + offset, ctx->buf + offset, p, use_len);
-
-        if (offset + use_len == 16) {
-            gcm_mult(ctx, ctx->buf, ctx->buf);
-        }
-
-        ctx->add_len += use_len;
-        add_len -= use_len;
-        p += use_len;
-    }
-
-    ctx->add_len += add_len;
-
-    while (add_len >= 16) {
-        mbedtls_xor(ctx->buf, ctx->buf, p, 16);
-
-        gcm_mult(ctx, ctx->buf, ctx->buf);
-
-        add_len -= 16;
-        p += 16;
-    }
-
-    if (add_len > 0) {
-        mbedtls_xor(ctx->buf, ctx->buf, p, add_len);
-    }
+    update_ghash(ctx, add, add_len, true);
 
     return 0;
 }
 
+#if !defined(MBEDTLS_CIPHER_MODE_CTR)
 /* Increment the counter. */
 static void gcm_incr(unsigned char y[16])
 {
@@ -558,6 +571,7 @@ static int gcm_mask(mbedtls_gcm_context *ctx,
 
     return 0;
 }
+#endif /* !defined(MBEDTLS_CIPHER_MODE_CTR) */
 
 int mbedtls_gcm_update(mbedtls_gcm_context *ctx,
                        const unsigned char *input, size_t input_length,
@@ -567,7 +581,6 @@ int mbedtls_gcm_update(mbedtls_gcm_context *ctx,
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     const unsigned char *p = input;
     unsigned char *out_p = output;
-    size_t offset;
     unsigned char ectr[16] = { 0 };
 
     if (output_size < input_length) {
@@ -598,7 +611,43 @@ int mbedtls_gcm_update(mbedtls_gcm_context *ctx,
         gcm_mult(ctx, ctx->buf, ctx->buf);
     }
 
-    offset = ctx->len % 16;
+#if defined(MBEDTLS_CIPHER_MODE_CTR)
+    /* Process the input with AES-CTR to possibly make use of AES-NI parallelism. */
+    size_t remaining_length = input_length;
+    while (remaining_length > 0) {
+        /* NOTE: There seems to be a trade-off here between keeping the function call
+         * overhead low by splitting the message in large chunks and keeping cache
+         * misses low between encryption and tag calculation by using small chunks.
+         *
+         * The gains are very minimal, and too small seems to be worse than too large,
+         * so I think for the actual pull request we should just process the input in
+         * one go. Probably not a good idea to make assumptions about the cache size
+         * in a library designed for embedded hardware anyway. */
+        size_t chunk_length = 40 * 16;
+        if (chunk_length > remaining_length) {
+            chunk_length = remaining_length;
+        }
+        size_t chunk_output_length = 0;
+        /* In decryption mode, the authentication tag is calculated over the input.
+         * Because the input and output buffers may overlap, we need to update it
+         * before doing the decryption. */
+        if (ctx->mode == MBEDTLS_GCM_DECRYPT) {
+            update_ghash(ctx, p, chunk_length, false);
+        }
+        ret = mbedtls_cipher_update(&ctx->cipher_ctx, p, chunk_length, out_p, &chunk_output_length);
+        if (ret != 0) {
+            goto exit;
+        }
+        if (ctx->mode == MBEDTLS_GCM_ENCRYPT) {
+            update_ghash(ctx, out_p, chunk_length, false);
+        }
+        p += chunk_length;
+        out_p += chunk_length;
+        remaining_length -= chunk_length;
+    }
+#else /* defined(MBEDTLS_CIPHER_MODE_CTR) */
+
+    size_t offset = ctx->len % 16;
     if (offset != 0) {
         size_t use_len = 16 - offset;
         if (use_len > input_length) {
@@ -606,7 +655,7 @@ int mbedtls_gcm_update(mbedtls_gcm_context *ctx,
         }
 
         if ((ret = gcm_mask(ctx, ectr, offset, use_len, p, out_p)) != 0) {
-            return ret;
+            goto exit;
         }
 
         if (offset + use_len == 16) {
@@ -624,7 +673,7 @@ int mbedtls_gcm_update(mbedtls_gcm_context *ctx,
     while (input_length >= 16) {
         gcm_incr(ctx->y);
         if ((ret = gcm_mask(ctx, ectr, 0, 16, p, out_p)) != 0) {
-            return ret;
+            goto exit;
         }
 
         gcm_mult(ctx, ctx->buf, ctx->buf);
@@ -637,12 +686,14 @@ int mbedtls_gcm_update(mbedtls_gcm_context *ctx,
     if (input_length > 0) {
         gcm_incr(ctx->y);
         if ((ret = gcm_mask(ctx, ectr, 0, input_length, p, out_p)) != 0) {
-            return ret;
+            goto exit;
         }
     }
+#endif /* defined(MBEDTLS_CIPHER_MODE_CTR) */
 
+exit:
     mbedtls_platform_zeroize(ectr, sizeof(ectr));
-    return 0;
+    return ret;
 }
 
 int mbedtls_gcm_finish(mbedtls_gcm_context *ctx,

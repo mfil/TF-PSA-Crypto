@@ -1483,6 +1483,10 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
+    if (length == 0) {
+        return 0;
+    }
+
     size_t offset = *nc_off;
 
     if (offset > 0x0F) {
