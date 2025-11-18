@@ -119,6 +119,33 @@ void mbedtls_aesni_gcm_mult(unsigned char c[16],
                             const unsigned char a[16],
                             const unsigned char b[16]);
 
+/**
+ * \brief          Internal GCM multiplication and addition:
+                   c = a_1 * b_1 + ... + a_4 * b_4 in GF(2^128)
+ *
+ * \note           This function is only for internal use by other library
+ *                 functions; you must not call it directly.
+ *
+ * \note           This function offers two benefits over calling
+ *                 mbedtls_aesni_gcm_mult several times: First, we do not have 
+ *                 to perform the reduction modulo g(x) after every
+ *                 multiplication. Second, we can pipeline the CLMUL operations:
+ *                 A CLMUL instruction takes multiple clock-cycles to complete,
+ *                 but another instruction can start executing on the next clock
+ *                 cycle, as long as it does not depend on the result of the
+ *                 CLMUL instruction.
+ *
+ * \param c        Result
+ * \param a        First operands of the multiplications
+ * \param b        Second operands of the multiplications
+ *
+ * \note           Both operands and result are bit strings interpreted as
+ *                 elements of GF(2^128) as per the GCM spec.
+ */
+void mbedtls_aesni_gcm_mult_4blocks(unsigned char c[16],
+                                    const unsigned char *a[4],
+                                    const unsigned char *b[4]);
+
 #if !defined(MBEDTLS_BLOCK_CIPHER_NO_DECRYPT)
 /**
  * \brief           Internal round key inversion. This function computes

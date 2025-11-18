@@ -11,6 +11,7 @@
  */
 
 #include "tf_psa_crypto_common.h"
+#include <stdio.h>
 
 #if defined(MBEDTLS_AESNI_C)
 
@@ -154,6 +155,47 @@ static void gcm_clmul(const __m128i aa, const __m128i bb,
     *cc = _mm_xor_si128(*cc, ee);                    // c1+e0+f0:c0
 }
 
+/*
+ * GCM multiplication: c = sum_i a_i times b_i in GF(2^128) for i = 1, ..., 4
+ * Based on [CLMUL-WP] algorithms 1 (with equation 27) and 5.
+ */
+
+static void gcm_clmul_4blocks(const __m128i aa[4], const __m128i bb[4],
+                              __m128i *cc, __m128i *dd)
+{
+    __m128i cc_i[4];
+    __m128i dd_i[4];
+    __m128i ee_i[4];
+    __m128i ff_i[4];
+    cc_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x00); // a0*b0 = c1:c0
+    cc_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x00);
+    cc_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x00);
+    cc_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x00);
+    dd_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x11); // a1*b1 = d1:d0
+    dd_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x11);
+    dd_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x11);
+    dd_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x11);
+    ee_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x10); // a0*b1 = e1:e0
+    ee_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x10);
+    ee_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x10);
+    ee_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x10);
+    ff_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x01); // a1*b0 = f1:f0
+    ff_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x01);
+    ff_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x01);
+    ff_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x01);
+
+    for (size_t i = 0; i < 4; i++) {
+        ff_i[i] = _mm_xor_si128(ff_i[i], ee_i[i]);                      // e1+f1:e0+f0
+        ee_i[i] = ff_i[i];                                         // e1+f1:e0+f0
+        ff_i[i] = _mm_srli_si128(ff_i[i], 8);                      // 0:e1+f1
+        ee_i[i] = _mm_slli_si128(ee_i[i], 8);                      // e0+f0:0
+        dd_i[i] = _mm_xor_si128(dd_i[i], ff_i[i]);                    // d1:d0+e1+f1
+        cc_i[i] = _mm_xor_si128(cc_i[i], ee_i[i]);                    // c1+e0+f0:c0
+        *cc = _mm_xor_si128(*cc, cc_i[i]);
+        *dd = _mm_xor_si128(*dd, dd_i[i]);
+    }
+}
+
 static void gcm_shift(__m128i *cc, __m128i *dd)
 {
     /* [CMUCL-WP] Algorithm 5 Step 1: shift cc:dd one bit to the left,
@@ -213,6 +255,39 @@ void mbedtls_aesni_gcm_mult(unsigned char c[16],
     }
 
     gcm_clmul(aa, bb, &cc, &dd);
+    gcm_shift(&cc, &dd);
+    /*
+     * Now reduce modulo the GCM polynomial x^128 + x^7 + x^2 + x + 1
+     * using [CLMUL-WP] algorithm 5 (p. 18).
+     * Currently dd:cc holds x3:x2:x1:x0 (already shifted).
+     */
+    __m128i dx = gcm_reduce(cc);
+    __m128i xh = gcm_mix(dx);
+    cc = _mm_xor_si128(xh, dd); // x3+h1:x2+h0
+
+    /* Now byte-reverse the outputs */
+    for (size_t i = 0; i < 16; i++) {
+        c[i] = ((uint8_t *) &cc)[15 - i];
+    }
+
+    return;
+}
+
+void mbedtls_aesni_gcm_mult_4blocks(unsigned char c[16],
+                                    const unsigned char *a[4],
+                                    const unsigned char *b[4])
+{
+    __m128i aa[4] = { 0 }, bb[4] = { 0 }, cc = { 0 }, dd = { 0 };
+
+    for (size_t i = 0; i < 4; i++) {
+        /* The inputs are in big-endian order, so byte-reverse them */
+        for (size_t j = 0; j < 16; j++) {
+            ((uint8_t *) &aa[i])[j] = a[i][15 - j];
+            ((uint8_t *) &bb[i])[j] = b[i][15 - j];
+        }
+    }
+
+    gcm_clmul_4blocks(aa, bb, &cc, &dd);
     gcm_shift(&cc, &dd);
     /*
      * Now reduce modulo the GCM polynomial x^128 + x^7 + x^2 + x + 1

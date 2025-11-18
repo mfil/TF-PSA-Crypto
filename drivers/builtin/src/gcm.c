@@ -119,6 +119,11 @@ static int gcm_gen_table(mbedtls_gcm_context *ctx)
     switch (ctx->acceleration) {
 #if defined(MBEDTLS_AESNI_HAVE_CODE)
         case MBEDTLS_GCM_ACC_AESNI:
+            /* Instead, store small powers of H in the table after H. */
+            uint8_t *h_in_table = ((uint8_t *)ctx->H) + MBEDTLS_GCM_HTABLE_SIZE * sizeof(uint64_t);
+            mbedtls_aesni_gcm_mult(h_in_table + 16, h_in_table, h_in_table);
+            mbedtls_aesni_gcm_mult(h_in_table + 32, h_in_table + 16, h_in_table);
+            mbedtls_aesni_gcm_mult(h_in_table + 48, h_in_table + 32, h_in_table);
             return 0;
 #endif
 
@@ -399,6 +404,24 @@ static void gcm_update_ghash(mbedtls_gcm_context *ctx,
         }
         pos += use_len;
     }
+
+#if defined(MBEDTLS_AESNI_HAVE_CODE)
+    if (mbedtls_aesni_has_support(MBEDTLS_AESNI_CLMUL)) {
+        while (data_length - pos >= 4 * 16) {
+            mbedtls_xor(ctx->buf, ctx->buf, &data[pos], 16);
+            const unsigned char *a_ptrs[4] = { ctx->buf, &data[pos + 16], &data[pos + 32], &data[pos + 48] };
+            const unsigned char *b_ptrs[4] = {
+                (unsigned char *)&ctx->H[MBEDTLS_GCM_HTABLE_SIZE/2 + 3][0],
+                (unsigned char *)&ctx->H[MBEDTLS_GCM_HTABLE_SIZE/2 + 2][0],
+                (unsigned char *)&ctx->H[MBEDTLS_GCM_HTABLE_SIZE/2 + 1][0],
+                (unsigned char *)&ctx->H[MBEDTLS_GCM_HTABLE_SIZE/2][0]
+            };
+            mbedtls_aesni_gcm_mult_4blocks(ctx->buf, a_ptrs, b_ptrs);
+            pos += 4 * 16;
+        }
+    }
+#endif /* defined(MBEDTLS_AESNI_HAVE_CODE) */
+
     while (data_length - pos >= 16) {
         mbedtls_xor(ctx->buf, ctx->buf, &data[pos], 16);
         gcm_mult(ctx, ctx->buf, ctx->buf);
