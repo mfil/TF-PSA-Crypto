@@ -163,37 +163,44 @@ static void gcm_clmul(const __m128i aa, const __m128i bb,
 static void gcm_clmul_4blocks(const __m128i aa[4], const __m128i bb[4],
                               __m128i *cc, __m128i *dd)
 {
-    __m128i cc_i[4];
-    __m128i dd_i[4];
-    __m128i ee_i[4];
-    __m128i ff_i[4];
-    cc_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x00); // a0*b0 = c1:c0
-    cc_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x00);
-    cc_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x00);
-    cc_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x00);
-    dd_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x11); // a1*b1 = d1:d0
-    dd_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x11);
-    dd_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x11);
-    dd_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x11);
-    ee_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x10); // a0*b1 = e1:e0
-    ee_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x10);
-    ee_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x10);
-    ee_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x10);
-    ff_i[0] = _mm_clmulepi64_si128(aa[0], bb[0], 0x01); // a1*b0 = f1:f0
-    ff_i[1] = _mm_clmulepi64_si128(aa[1], bb[1], 0x01);
-    ff_i[2] = _mm_clmulepi64_si128(aa[2], bb[2], 0x01);
-    ff_i[3] = _mm_clmulepi64_si128(aa[3], bb[3], 0x01);
+    __m128i ee, ff;
+    __m128i intermediate[3];
 
-    for (size_t i = 0; i < 4; i++) {
-        ff_i[i] = _mm_xor_si128(ff_i[i], ee_i[i]);                      // e1+f1:e0+f0
-        ee_i[i] = ff_i[i];                                         // e1+f1:e0+f0
-        ff_i[i] = _mm_srli_si128(ff_i[i], 8);                      // 0:e1+f1
-        ee_i[i] = _mm_slli_si128(ee_i[i], 8);                      // e0+f0:0
-        dd_i[i] = _mm_xor_si128(dd_i[i], ff_i[i]);                    // d1:d0+e1+f1
-        cc_i[i] = _mm_xor_si128(cc_i[i], ee_i[i]);                    // c1+e0+f0:c0
-        *cc = _mm_xor_si128(*cc, cc_i[i]);
-        *dd = _mm_xor_si128(*dd, dd_i[i]);
-    }
+    *cc = _mm_clmulepi64_si128(aa[0], bb[0], 0x00); // a0*b0 = c1:c0
+    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x00);
+    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x00);
+    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x00);
+    *cc = _mm_xor_si128(*cc, intermediate[0]);
+    *cc = _mm_xor_si128(*cc, intermediate[1]);
+    *cc = _mm_xor_si128(*cc, intermediate[2]);
+    *dd = _mm_clmulepi64_si128(aa[0], bb[0], 0x11); // a1*b1 = d1:d0
+    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x11);
+    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x11);
+    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x11);
+    *dd = _mm_xor_si128(*dd, intermediate[0]);
+    *dd = _mm_xor_si128(*dd, intermediate[1]);
+    *dd = _mm_xor_si128(*dd, intermediate[2]);
+    ee = _mm_clmulepi64_si128(aa[0], bb[0], 0x10); // a0*b1 = e1:e0
+    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x10);
+    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x10);
+    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x10);
+    ee = _mm_xor_si128(ee, intermediate[0]);
+    ee = _mm_xor_si128(ee, intermediate[1]);
+    ee = _mm_xor_si128(ee, intermediate[2]);
+    ff = _mm_clmulepi64_si128(aa[0], bb[0], 0x01); // a1*b0 = f1:f0
+    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x01);
+    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x01);
+    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x01);
+    ff = _mm_xor_si128(ff, intermediate[0]);
+    ff = _mm_xor_si128(ff, intermediate[1]);
+    ff = _mm_xor_si128(ff, intermediate[2]);
+
+    ff = _mm_xor_si128(ff, ee);                      // e1+f1:e0+f0
+    ee = ff;                                         // e1+f1:e0+f0
+    ff = _mm_srli_si128(ff, 8);                      // 0:e1+f1
+    ee = _mm_slli_si128(ee, 8);                      // e0+f0:0
+    *dd = _mm_xor_si128(*dd, ff);                    // d1:d0+e1+f1
+    *cc = _mm_xor_si128(*cc, ee);                    // c1+e0+f0:c0
 }
 
 static void gcm_shift(__m128i *cc, __m128i *dd)

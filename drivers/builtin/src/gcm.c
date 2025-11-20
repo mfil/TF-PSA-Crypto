@@ -120,10 +120,12 @@ static int gcm_gen_table(mbedtls_gcm_context *ctx)
 #if defined(MBEDTLS_AESNI_HAVE_CODE)
         case MBEDTLS_GCM_ACC_AESNI:
             /* Instead, store small powers of H in the table after H. */
-            uint8_t *h_in_table = ((uint8_t *)ctx->H) + MBEDTLS_GCM_HTABLE_SIZE * sizeof(uint64_t);
-            mbedtls_aesni_gcm_mult(h_in_table + 16, h_in_table, h_in_table);
-            mbedtls_aesni_gcm_mult(h_in_table + 32, h_in_table + 16, h_in_table);
-            mbedtls_aesni_gcm_mult(h_in_table + 48, h_in_table + 32, h_in_table);
+            {
+                uint8_t *h_in_table = ((uint8_t *)ctx->H) + MBEDTLS_GCM_HTABLE_SIZE * sizeof(uint64_t);
+                mbedtls_aesni_gcm_mult(h_in_table + 16, h_in_table, h_in_table);
+                mbedtls_aesni_gcm_mult(h_in_table + 32, h_in_table + 16, h_in_table);
+                mbedtls_aesni_gcm_mult(h_in_table + 48, h_in_table + 32, h_in_table);
+            }
             return 0;
 #endif
 
