@@ -160,40 +160,45 @@ static void gcm_clmul(const __m128i aa, const __m128i bb,
  * Based on [CLMUL-WP] algorithms 1 (with equation 27) and 5.
  */
 
-static void gcm_clmul_4blocks(const __m128i aa[4], const __m128i bb[4],
+static void gcm_clmul_4blocks(__m128i aa[4], __m128i bb[4],
                               __m128i *cc, __m128i *dd)
 {
-    __m128i ee, ff;
-    __m128i intermediate[3];
+    __m128i cc2, dd2, ee, ff, ee2, ff2;
 
     *cc = _mm_clmulepi64_si128(aa[0], bb[0], 0x00); // a0*b0 = c1:c0
-    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x00);
-    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x00);
-    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x00);
-    *cc = _mm_xor_si128(*cc, intermediate[0]);
-    *cc = _mm_xor_si128(*cc, intermediate[1]);
-    *cc = _mm_xor_si128(*cc, intermediate[2]);
     *dd = _mm_clmulepi64_si128(aa[0], bb[0], 0x11); // a1*b1 = d1:d0
-    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x11);
-    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x11);
-    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x11);
-    *dd = _mm_xor_si128(*dd, intermediate[0]);
-    *dd = _mm_xor_si128(*dd, intermediate[1]);
-    *dd = _mm_xor_si128(*dd, intermediate[2]);
     ee = _mm_clmulepi64_si128(aa[0], bb[0], 0x10); // a0*b1 = e1:e0
-    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x10);
-    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x10);
-    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x10);
-    ee = _mm_xor_si128(ee, intermediate[0]);
-    ee = _mm_xor_si128(ee, intermediate[1]);
-    ee = _mm_xor_si128(ee, intermediate[2]);
     ff = _mm_clmulepi64_si128(aa[0], bb[0], 0x01); // a1*b0 = f1:f0
-    intermediate[0] = _mm_clmulepi64_si128(aa[1], bb[1], 0x01);
-    intermediate[1] = _mm_clmulepi64_si128(aa[2], bb[2], 0x01);
-    intermediate[2] = _mm_clmulepi64_si128(aa[3], bb[3], 0x01);
-    ff = _mm_xor_si128(ff, intermediate[0]);
-    ff = _mm_xor_si128(ff, intermediate[1]);
-    ff = _mm_xor_si128(ff, intermediate[2]);
+
+    cc2 = _mm_clmulepi64_si128(aa[1], bb[1], 0x00); // a0*b0 = c1:c0
+    dd2 = _mm_clmulepi64_si128(aa[1], bb[1], 0x11); // a1*b1 = d1:d0
+    ee2 = _mm_clmulepi64_si128(aa[1], bb[1], 0x10); // a0*b1 = e1:e0
+    ff2 = _mm_clmulepi64_si128(aa[1], bb[1], 0x01); // a1*b0 = f1:f0
+
+    *cc = _mm_xor_si128(cc2, *cc);
+    *dd = _mm_xor_si128(dd2, *dd);
+    cc2 = _mm_clmulepi64_si128(aa[2], bb[2], 0x00); // a0*b0 = c1:c0
+    dd2 = _mm_clmulepi64_si128(aa[2], bb[2], 0x11); // a1*b1 = d1:d0
+
+    ee = _mm_xor_si128(ee2, ee);
+    ff = _mm_xor_si128(ff2, ff);
+    ee2 = _mm_clmulepi64_si128(aa[2], bb[2], 0x10); // a0*b1 = e1:e0
+    ff2 = _mm_clmulepi64_si128(aa[2], bb[2], 0x01); // a1*b0 = f1:f0
+
+    *cc = _mm_xor_si128(cc2, *cc);
+    *dd = _mm_xor_si128(dd2, *dd);
+    cc2 = _mm_clmulepi64_si128(aa[3], bb[3], 0x00); // a0*b0 = c1:c0
+    dd2 = _mm_clmulepi64_si128(aa[3], bb[3], 0x11); // a1*b1 = d1:d0
+
+    ee = _mm_xor_si128(ee2, ee);
+    ff = _mm_xor_si128(ff2, ff);
+    ee2 = _mm_clmulepi64_si128(aa[3], bb[3], 0x10); // a0*b1 = e1:e0
+    ff2 = _mm_clmulepi64_si128(aa[3], bb[3], 0x01); // a1*b0 = f1:f0
+
+    *cc = _mm_xor_si128(cc2, *cc);
+    *dd = _mm_xor_si128(dd2, *dd);
+    ee = _mm_xor_si128(ee2, ee);
+    ff = _mm_xor_si128(ff2, ff);
 
     ff = _mm_xor_si128(ff, ee);                      // e1+f1:e0+f0
     ee = ff;                                         // e1+f1:e0+f0
@@ -284,7 +289,7 @@ void mbedtls_aesni_gcm_mult_4blocks(unsigned char c[16],
                                     const unsigned char *a[4],
                                     const unsigned char *b[4])
 {
-    __m128i aa[4] = { 0 }, bb[4] = { 0 }, cc = { 0 }, dd = { 0 };
+    __m128i aa[4], bb[4], cc, dd;
 
     for (size_t i = 0; i < 4; i++) {
         /* The inputs are in big-endian order, so byte-reverse them */
@@ -293,8 +298,8 @@ void mbedtls_aesni_gcm_mult_4blocks(unsigned char c[16],
             ((uint8_t *) &bb[i])[j] = b[i][15 - j];
         }
     }
-
     gcm_clmul_4blocks(aa, bb, &cc, &dd);
+
     gcm_shift(&cc, &dd);
     /*
      * Now reduce modulo the GCM polynomial x^128 + x^7 + x^2 + x + 1
